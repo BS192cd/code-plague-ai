@@ -1,0 +1,108 @@
+#version: '3.8'
+
+services:
+  # MongoDB Database
+  mongodb:
+    image: mongo:7.0
+    container_name: anti-plagiarism-mongodb
+    restart: unless-stopped
+    ports:
+      - "27017:27017"
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: admin
+      MONGO_INITDB_ROOT_PASSWORD: password123
+      MONGO_INITDB_DATABASE: anti_plagiarism_ai
+    volumes:
+      - mongodb_data:/data/db
+      - ./backend/init-mongo.js:/docker-entrypoint-initdb.d/init-mongo.js:ro
+    networks:
+      - anti-plagiarism-network
+    healthcheck:
+      test: echo 'db.runCommand("ping").ok' | mongosh localhost:27017/test --quiet
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # Redis Cache
+  redis:
+    image: redis:7.2-alpine
+    container_name: anti-plagiarism-redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    command: redis-server --appendonly yes --requirepass redis123
+    volumes:
+      - redis_data:/data
+    networks:
+      - anti-plagiarism-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "--raw", "incr", "ping"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # FastAPI Backend
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: anti-plagiarism-backend
+    restart: unless-stopped
+    ports:
+      - "9000:9000"
+    environment:
+      - MONGO_URL=mongodb://admin:password123@mongodb:27017/anti_plagiarism_ai?authSource=admin
+      - MONGO_DB=anti_plagiarism_ai
+      - REDIS_URL=redis://:redis123@redis:6379/0
+      - JWT_SECRET=VV6n01y00-2ZZ6omwrstMUDjOgPNtjOfLX-DAHVKjuk
+      - JWT_ALGORITHM=HS256
+      - ACCESS_TOKEN_EXPIRE_MINUTES=30
+      - DEBUG=True
+      - LOG_LEVEL=INFO
+    volumes:
+      - ./backend:/app
+    depends_on:
+      mongodb:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - anti-plagiarism-network
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:9000/api/v1/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # React Frontend (Development)
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile.dev
+    container_name: anti-plagiarism-frontend
+    restart: unless-stopped
+    ports:
+      - "5000:5000"
+    environment:
+      - VITE_API_BASE_URL=http://localhost:9000/api/v1
+      - VITE_WS_URL=ws://localhost:9000/api/v1/ws
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+    depends_on:
+      backend:
+        condition: service_healthy
+    networks:
+      - anti-plagiarism-network
+    stdin_open: true
+    tty: true
+
+volumes:
+  mongodb_data:
+    driver: local
+  redis_data:
+    driver: local
+
+networks:
+  anti-plagiarism-network:
+    driver: bridge
